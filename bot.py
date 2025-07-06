@@ -1,16 +1,5 @@
-"""
-bot.py – Video-Sort Bot
-────────────────────────────────────────────────────────
-Flow:
-  /sort [label]
-  (forward videos)
-  /setnames
-  /setformat          ← MUST be done
-  /setstickers        ← MUST provide two stickers
-  /publish            ← posts episodes (only if all above were done)
-"""
-
-import asyncio, re
+import asyncio
+import re
 from collections import defaultdict
 from typing import Dict, List, Tuple
 
@@ -22,7 +11,6 @@ from pyrogram.types import Message
 import config
 
 
-# ─────────────────────────── 1 · CLIENT ───────────────────────────
 app = Client(
     "video_sort_bot",
     api_id=config.API_ID,
@@ -30,23 +18,23 @@ app = Client(
     bot_token=config.BOT_TOKEN,
 )
 
-# ─────────────────────────── 2 · STORAGE ──────────────────────────
-class UserStore:
-    def __init__(self):
-        self.names: List[str] = []                                       # episode titles
-        self.caption_format: str = ""                                    # custom template
-        self.stickers: List[str] = []                                    # two sticker file_ids
-        # videos[ep][quality] = (file_id, original_name)
-        self.videos: Dict[int, Dict[str, Tuple[str, str]]] = defaultdict(dict)
-        self.label: str = ""                                             # session label
-
-users: Dict[int, UserStore] = defaultdict(UserStore)
 QUALITY_TAGS = ["480p", "720p", "1080p"]
 
 
-# ─────────────────────────── 3 · HELPERS ──────────────────────────
+class UserStore:
+    def __init__(self):
+        self.names: List[str] = []  # episode titles
+        self.caption_format: str = ""  # caption template
+        self.stickers: List[str] = []  # two sticker file_ids
+        # videos[ep][quality] = (file_id, original_name)
+        self.videos: Dict[int, Dict[str, Tuple[str, str]]] = defaultdict(dict)
+        self.label: str = ""
+
+
+users: Dict[int, UserStore] = defaultdict(UserStore)
+
+
 def parse_video(msg: Message):
-    """Extract (episode:int, quality:str, original_filename:str)."""
     text = (msg.caption or msg.video.file_name or "").lower()
     original = msg.caption or msg.video.file_name or "Video"
 
@@ -58,7 +46,6 @@ def parse_video(msg: Message):
 
 
 async def safe_call(func, *args, **kwargs):
-    """Retry Telegram API calls automatically on FloodWait."""
     while True:
         try:
             return await func(*args, **kwargs)
@@ -66,7 +53,6 @@ async def safe_call(func, *args, **kwargs):
             await asyncio.sleep(e.value + 1)
 
 
-# ─────────────────────────── 4 · COMMANDS ─────────────────────────
 @app.on_message(filters.command("start") & filters.private)
 async def cmd_start(_, m: Message):
     await m.reply(
@@ -81,11 +67,14 @@ async def cmd_start(_, m: Message):
 async def cmd_sort(_, m: Message):
     label = " ".join(m.command[1:]).strip() or "New Session"
     s = users[m.from_user.id]
-    s.names.clear(); s.caption_format = ""; s.stickers.clear(); s.videos.clear()
+    s.names.clear()
+    s.caption_format = ""
+    s.stickers.clear()
+    s.videos.clear()
     s.label = label
     await m.reply(
         f"✅ Sorting session **{label}** started.\n"
-        "Now forward videos, then follow: `/setnames`, `/setformat`, `/setstickers`, `/publish`.",
+        "Forward videos, then do `/setnames`, `/setformat`, `/setstickers`, `/publish`.",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -101,9 +90,13 @@ async def cmd_setnames(_, m: Message):
 
 @app.on_message(filters.command("setformat") & filters.private)
 async def cmd_setformat(_, m: Message):
-    fmt = "\n".join(m.text.split("\n")[1:]).strip()
+    lines = m.text.splitlines()
+    # Remove only the command line itself (no blank lines left)
+    fmt = "\n".join(line for line in lines if not line.strip().startswith("/setformat")).strip()
+
     if not fmt:
-        return await m.reply("❌ Provide the format after the command.", quote=True)
+        return await m.reply("❌ Please provide a caption format after the command.", quote=True)
+
     users[m.from_user.id].caption_format = fmt
     await m.reply(
         "✅ Caption format saved!\nUse `{ep}` for episode number and `{quality}` for quality.",
@@ -141,13 +134,12 @@ async def cmd_setstickers(_, m: Message):
     )
 
 
-# ─────────────────────────── 5 · VIDEO INTAKE ─────────────────────
 @app.on_message(filters.video & filters.private)
 async def on_video(_, m: Message):
     ep, q, original = parse_video(m)
     if not ep or not q:
         return await m.reply(
-            "❌ Caption/filename must include episode number and 480p/720p/1080p.",
+            "❌ Caption or filename must include episode number and 480p/720p/1080p.",
             quote=True,
         )
     users[m.from_user.id].videos[ep][q] = (m.video.file_id, original)
@@ -157,7 +149,6 @@ async def on_video(_, m: Message):
     )
 
 
-# ─────────────────────────── 6 · PUBLISH ──────────────────────────
 @app.on_message(filters.command("publish") & filters.private)
 async def cmd_publish(_, m: Message):
     s = users[m.from_user.id]
@@ -174,13 +165,14 @@ async def cmd_publish(_, m: Message):
 
     posted = 0
     for idx, title in enumerate(s.names, start=1):
+        # Send episode title bolded
         await safe_call(app.send_message, m.chat.id, f"**{title}**", parse_mode=ParseMode.MARKDOWN)
 
         for q in QUALITY_TAGS:
             if q in s.videos.get(idx, {}):
-                fid, _fname = s.videos[idx][q]
+                fid, original_name = s.videos[idx][q]
 
-                # Build caption from template
+                # Build caption from template (bold each line)
                 raw = s.caption_format.format(ep=f"{idx:02d}", quality=q)
                 caption = "\n".join(f"**{line}**" for line in raw.splitlines())
 
@@ -190,15 +182,14 @@ async def cmd_publish(_, m: Message):
                     fid,
                     caption=caption,
                     parse_mode=ParseMode.MARKDOWN,
+                    file_name=original_name  # Send with original filename (if supported)
                 )
-                await asyncio.sleep(1)        # gap between qualities
+                await asyncio.sleep(1)  # Delay between qualities
 
+        # Send stickers after all qualities
         await safe_call(app.send_sticker, m.chat.id, s.stickers[0])
         await safe_call(app.send_sticker, m.chat.id, s.stickers[1])
         posted += 1
-        await asyncio.sleep(1.5)              # gap between episodes
+        await asyncio.sleep(1.5)  # Delay between episodes
 
-    await m.reply(
-        f"🎉 Posted **{posted}** episodes successfully!",
-        parse_mode=ParseMode.MARKDOWN,
-                )
+    await m.reply(f"🎉 Posted **{posted}** episodes successfully!", parse_mode=ParseMode.MARKDOWN)
