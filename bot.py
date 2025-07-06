@@ -1,5 +1,11 @@
 """
-bot.py – All bot logic and command handlers
+bot.py – Video-Sort Bot
+• Forward videos (caption must contain episode number + 480p/720p/1080p).
+• /setnames  – paste all episode titles (one per line)
+• /setstickers – EITHER:
+      a) reply to a sticker (run twice to save 2 stickers), OR
+      b) /setstickers <id1> <id2>
+• /publish – posts everything in order
 """
 
 import re
@@ -9,9 +15,9 @@ from typing import Dict, List
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
-import config  # credentials from config.py
+import config  # API_ID, API_HASH, BOT_TOKEN
 
-# ── 1. Start the bot ────────────────────────────────
+# ── Pyrogram client ───────────────────────────────────────────────
 app = Client(
     "video_sort_bot",
     api_id=config.API_ID,
@@ -19,12 +25,13 @@ app = Client(
     bot_token=config.BOT_TOKEN,
 )
 
-# ── 2. In-memory storage ────────────────────────────
+# ── Data store (RAM) ──────────────────────────────────────────────
 class UserStore:
     def __init__(self):
-        self.names: List[str] = []                # Episode titles
-        self.stickers: List[str] = []             # Two sticker file_ids
-        self.videos: Dict[int, Dict[str, str]] = defaultdict(dict)  # ep → quality → file_id
+        self.names: List[str] = []
+        self.stickers: List[str] = []
+        self.videos: Dict[int, Dict[str, str]] = defaultdict(dict)
+
 
 users: Dict[int, UserStore] = defaultdict(UserStore)
 
@@ -32,25 +39,25 @@ QUALITY_TAGS = ["480p", "720p", "1080p"]
 EP_RE = re.compile(r"episode\s*(\d{1,2})|\b(\d{1,2})\b", re.I)
 
 
-# ── 3. Helper to extract ep & quality ───────────────
 def parse_video(msg: Message):
+    """Return (episode:int | None, quality:str | None)."""
     text = (msg.caption or msg.video.file_name or "").lower()
-    quality = next((q for q in QUALITY_TAGS if q in text), None)
+    q = next((qt for qt in QUALITY_TAGS if qt in text), None)
     m = EP_RE.search(text)
     ep = int(m.group(1) or m.group(2)) if m else None
-    return ep, quality
+    return ep, q
 
 
-# ── 4. Commands ─────────────────────────────────────
+# ── Commands ──────────────────────────────────────────────────────
 @app.on_message(filters.command("start") & filters.private)
 async def cmd_start(_, m: Message):
     await m.reply(
-        "👋 *Welcome to Video-Sort Bot!*\n\n"
-        "✅ Forward your episode videos (captions must include episode number and quality: 480p/720p/1080p)\n"
-        "✅ Then send /setnames and paste all episode names\n"
-        "✅ Then /setstickers with 2 sticker file_ids\n"
-        "✅ Finally, /publish to auto-post everything 🎉",
-        quote=True
+        "👋 *Video-Sort Bot*\n\n"
+        "1️⃣ Forward season videos (captions must contain episode number + quality).\n"
+        "2️⃣ `/setnames` – paste titles.\n"
+        "3️⃣ Reply to *two* stickers with `/setstickers`.\n"
+        "4️⃣ `/publish` – bot posts everything. Enjoy! 🎉",
+        quote=True,
     )
 
 
@@ -58,68 +65,87 @@ async def cmd_start(_, m: Message):
 async def cmd_setnames(_, m: Message):
     if len(m.text.split("\n")) < 2:
         return await m.reply(
-            "❌ Please send the episode names after the command.\n\n"
-            "✅ Example:\n"
+            "❌ Send the episode list after the command:\n"
             "`/setnames`\n"
-            "`Episode 01 - Start`\n"
-            "`Episode 02 - The Next One`",
+            "`Episode 01 - Pilot`\n"
+            "`Episode 02 - …`",
             parse_mode="markdown",
-            quote=True
+            quote=True,
         )
-    users[m.from_user.id].names = [line.strip() for line in m.text.split("\n")[1:] if line.strip()]
+    users[m.from_user.id].names = [ln.strip() for ln in m.text.split("\n")[1:] if ln.strip()]
     await m.reply(f"✅ Stored *{len(users[m.from_user.id].names)}* episode names.")
 
 
 @app.on_message(filters.command(["setstickers", "addstickers"]) & filters.private)
 async def cmd_setstickers(_, m: Message):
+    store = users[m.from_user.id]
+
+    # ── A. Reply-to-sticker mode ────────────────────────────────
+    if m.reply_to_message and m.reply_to_message.sticker:
+        fid = m.reply_to_message.sticker.file_id
+        if fid in store.stickers:
+            return await m.reply("⚠️ This sticker is already saved.", quote=True)
+        if len(store.stickers) >= 2:
+            store.stickers = []  # reset if user starts over
+        store.stickers.append(fid)
+        if len(store.stickers) == 1:
+            await m.reply("✅ Sticker 1 saved. Now reply to the second sticker and send /setstickers.",
+                          quote=True)
+        else:
+            await m.reply("✅ Sticker 2 saved. Both stickers are set!", quote=True)
+        return
+
+    # ── B. ID-parameters mode ──────────────────────────────────
     parts = m.text.strip().split(maxsplit=2)
-    if len(parts) != 3:
-        return await m.reply(
-            "❌ Correct Usage:\n`/setstickers <sticker_file_id1> <sticker_file_id2>`",
-            parse_mode="markdown",
-            quote=True
-        )
-    users[m.from_user.id].stickers = parts[1:]
-    await m.reply("✅ Stickers saved successfully!")
+    if len(parts) == 3:
+        store.stickers = parts[1:]
+        return await m.reply("✅ Two stickers saved via parameters!", quote=True)
+
+    # ── Error message ──────────────────────────────────────────
+    await m.reply(
+        "❌ *How to use /setstickers*\n"
+        "• *Preferred*: reply to a sticker and send /setstickers (do this twice).\n"
+        "• Or: `/setstickers <file_id1> <file_id2>`",
+        parse_mode="markdown",
+        quote=True,
+    )
 
 
 @app.on_message(filters.video & filters.private & filters.forwarded)
 async def on_forwarded_video(_, m: Message):
-    ep, quality = parse_video(m)
-    if not ep or not quality:
+    ep, q = parse_video(m)
+    if not ep or not q:
         return await m.reply(
-            "❌ Couldn't detect episode number or quality!\n"
-            "Make sure caption or filename includes both.",
-            quote=True
+            "❌ Caption or filename must include episode number *and* quality (480p/720p/1080p).",
+            parse_mode="markdown",
+            quote=True,
         )
-
-    users[m.from_user.id].videos[ep][quality] = m.video.file_id
-    await m.reply(f"📥 Saved: *Episode {ep:02d}* • *{quality}*", parse_mode="markdown")
+    users[m.from_user.id].videos[ep][q] = m.video.file_id
+    await m.reply(f"📥 Saved *Episode {ep:02d}* • *{q}*",
+                  parse_mode="markdown")
 
 
 @app.on_message(filters.command("publish") & filters.private)
 async def cmd_publish(_, m: Message):
-    store = users[m.from_user.id]
-    
-    if not store.names:
-        return await m.reply("❌ Please set episode names first using /setnames.")
-    if len(store.stickers) < 2:
-        return await m.reply("❌ You must set 2 sticker file IDs using /setstickers.")
-    if not store.videos:
-        return await m.reply("❌ No videos have been saved yet.")
+    s = users[m.from_user.id]
+    if not s.names:
+        return await m.reply("❌ Use /setnames first.")
+    if len(s.stickers) < 2:
+        return await m.reply("❌ You need two stickers — reply to them with /setstickers.")
+    if not s.videos:
+        return await m.reply("❌ No videos collected yet.")
 
-    chat_id = m.chat.id
-    count = 0
-
-    for idx, title in enumerate(store.names, start=1):
-        await app.send_message(chat_id, f"**{title}**", parse_mode="markdown")
+    posted = 0
+    for idx, title in enumerate(s.names, start=1):
+        await app.send_message(m.chat.id, f"**{title}**", parse_mode="markdown")
 
         for q in QUALITY_TAGS:
-            if q in store.videos.get(idx, {}):
-                await app.send_video(chat_id, store.videos[idx][q], caption=q)
+            if q in s.videos.get(idx, {}):
+                await app.send_video(m.chat.id, s.videos[idx][q], caption=q)
 
-        await app.send_sticker(chat_id, store.stickers[0])
-        await app.send_sticker(chat_id, store.stickers[1])
-        count += 1
+        await app.send_sticker(m.chat.id, s.stickers[0])
+        await app.send_sticker(m.chat.id, s.stickers[1])
+        posted += 1
 
-    await m.reply(f"🎉 Successfully posted *{count}* episodes!", parse_mode="markdown")
+    await m.reply(f"🎉 Posted *{posted}* episodes successfully!",
+                  parse_mode="markdown")
