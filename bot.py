@@ -1,27 +1,28 @@
 """
-bot.py – Video-Sort Bot
+bot.py – Video-Sort Bot  (2025-07-06)
 
-Commands
---------
-/start            – basic help
-/sort [label]     – begin new sorting session (clears old data)
-/setnames         – paste episode titles (one per line)
-/setstickers      – reply to 2 stickers (run twice) or pass 2 IDs
-/publish          – post sorted episodes (title + 3 qualities + 2 stickers)
+Flow
+----
+/sort [label]      – start a new session
+/setnames          – paste episode titles
+/setstickers       – reply to two stickers (run twice) or give 2 IDs
+/publish           – bot posts: bold title, 3 quality videos, 2 stickers
 """
 
+import asyncio
 import re
 from collections import defaultdict
 from typing import Dict, List
 
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
+from pyrogram.errors import FloodWait
 from pyrogram.types import Message
 
 import config
 
 
-# ── 1.  Pyrogram client ──────────────────────────────────────────
+# ── 1.  Pyrogram client ───────────────────────────────────────────
 app = Client(
     "video_sort_bot",
     api_id=config.API_ID,
@@ -29,178 +30,163 @@ app = Client(
     bot_token=config.BOT_TOKEN,
 )
 
-
-# ── 2.  Per-user RAM store ───────────────────────────────────────
+# ── 2.  Per-user RAM store ────────────────────────────────────────
 class UserStore:
-    def __init__(self) -> None:
+    def __init__(self):
         self.names: List[str] = []
         self.stickers: List[str] = []
         self.videos: Dict[int, Dict[str, str]] = defaultdict(dict)
-        self.label: str = ""          # optional session name
+        self.label: str = ""
 
 
 users: Dict[int, UserStore] = defaultdict(UserStore)
 
-
-# ── 3.  Helpers ─────────────────────────────────────────────────
 QUALITY_TAGS = ["480p", "720p", "1080p"]
 
 
+# ── 3.  Helper: parse video caption/filename ──────────────────────
 def parse_video(msg: Message):
-    """
-    Extract (episode:int, quality:str) from caption or filename.
-    Supports: 'Episode 07', 'Ep07', 'E07', 'S01E07', etc.,
-    plus quality tags 480p / 720p / 1080p.
-    Returns (None, None) if either part is missing.
-    """
+    """Return (episode:int | None, quality:str | None)."""
     text = (msg.caption or msg.video.file_name or "").lower()
 
-    # Quality
+    # quality
     quality = next((q for q in QUALITY_TAGS if q in text), None)
 
-    # Episode number (1–2 digits) after episode/ep/e or sXXe
+    # episode number patterns: Episode 07, Ep07, E07, S01E07, etc.
     m = re.search(r"(?:episode|ep|e|s\d+e)(\d{1,2})", text, re.I)
     ep = int(m.group(1)) if m else None
 
     return ep, quality
 
 
-def get_store(user_id: int) -> UserStore:
+def store(user_id: int) -> UserStore:
     return users[user_id]
 
 
-# ── 4.  /start ──────────────────────────────────────────────────
+# ── 4.  Helper: safe call with FloodWait handling ─────────────────
+async def safe_call(func, *args, **kwargs):
+    """Retry Telegram API call on FloodWait."""
+    while True:
+        try:
+            return await func(*args, **kwargs)
+        except FloodWait as e:
+            await asyncio.sleep(e.value + 1)  # wait & retry
+
+
+# ── 5.  /start ────────────────────────────────────────────────────
 @app.on_message(filters.command("start") & filters.private)
 async def cmd_start(_, m: Message):
     await m.reply(
-        "👋 **Video-Sort Bot**\n\n"
-        "1️⃣ `/sort` – start a new season upload\n"
-        "2️⃣ `/setnames` – paste all episode titles\n"
-        "3️⃣ `/setstickers` – reply to two stickers (run twice)\n"
-        "4️⃣ `/publish` – get the sorted post\n\n"
-        "Your video’s *caption or filename must contain* the episode number "
-        "and one of `480p 720p 1080p`.",
+        "👋 **Video-Sort Bot**\n"
+        "`/sort` → `/setnames` → `/setstickers` → `/publish`",
         parse_mode=ParseMode.MARKDOWN,
         quote=True,
     )
 
 
-# ── 5.  /sort ───────────────────────────────────────────────────
+# ── 6.  /sort ─────────────────────────────────────────────────────
 @app.on_message(filters.command("sort") & filters.private)
 async def cmd_sort(_, m: Message):
-    label = " ".join(m.command[1:]).strip()
-    store = get_store(m.from_user.id)
-    store.names.clear()
-    store.stickers.clear()
-    store.videos.clear()
-    store.label = label or "New Session"
-
+    label = " ".join(m.command[1:]).strip() or "New Session"
+    s = store(m.from_user.id)
+    s.names.clear()
+    s.stickers.clear()
+    s.videos.clear()
+    s.label = label
     await m.reply(
-        f"✅ Sorting session **{store.label}** started!\n"
-        "Now send/forward all episode videos.\n"
-        "After that, use `/setnames`, `/setstickers`, then `/publish`.",
+        f"✅ Sorting session **{label}** started.\n"
+        "Forward all videos now, then run `/setnames`, `/setstickers`, `/publish`.",
         parse_mode=ParseMode.MARKDOWN,
-        quote=True,
     )
 
 
-# ── 6.  /setnames ───────────────────────────────────────────────
+# ── 7.  /setnames ────────────────────────────────────────────────
 @app.on_message(filters.command("setnames") & filters.private)
 async def cmd_setnames(_, m: Message):
-    lines = m.text.split("\n")[1:]  # skip the command line itself
-    titles = [ln.strip() for ln in lines if ln.strip()]
+    titles = [ln.strip() for ln in m.text.split("\n")[1:] if ln.strip()]
     if not titles:
         return await m.reply(
-            "❌ Send the episode list right after the command, e.g.\n"
-            "`/setnames`\n`Episode 01 - Pilot`\n`Episode 02 - …`",
-            parse_mode=ParseMode.MARKDOWN,
+            "❌ Paste episode titles after the command.",
             quote=True,
         )
-    get_store(m.from_user.id).names = titles
-    await m.reply(f"✅ Stored **{len(titles)}** episode names.",
-                  parse_mode=ParseMode.MARKDOWN)
+    store(m.from_user.id).names = titles
+    await m.reply(f"✅ Stored **{len(titles)}** episode names.", parse_mode=ParseMode.MARKDOWN)
 
 
-# ── 7.  /setstickers ────────────────────────────────────────────
+# ── 8.  /setstickers ─────────────────────────────────────────────
 @app.on_message(filters.command(["setstickers", "addstickers"]) & filters.private)
 async def cmd_setstickers(_, m: Message):
-    store = get_store(m.from_user.id)
+    s = store(m.from_user.id)
 
-    # A. Reply-to-sticker mode
+    # A. reply-to-sticker mode
     if m.reply_to_message and m.reply_to_message.sticker:
         fid = m.reply_to_message.sticker.file_id
-        if fid in store.stickers:
-            return await m.reply("⚠️ This sticker is already saved.", quote=True)
-        if len(store.stickers) >= 2:
-            store.stickers.clear()
-        store.stickers.append(fid)
-        msg = ("✅ Sticker 1 saved. Reply to the second sticker and send /setstickers."
-               if len(store.stickers) == 1
-               else "✅ Sticker 2 saved. Both stickers are set!")
+        if fid in s.stickers:
+            return await m.reply("⚠️ Already saved.", quote=True)
+        if len(s.stickers) >= 2:
+            s.stickers.clear()
+        s.stickers.append(fid)
+        msg = ("✅ Sticker 1 saved. Reply to second sticker and repeat."
+               if len(s.stickers) == 1
+               else "✅ Both stickers saved!")
         return await m.reply(msg, quote=True)
 
-    # B. Two IDs given
-    parts = m.text.strip().split(maxsplit=2)
+    # B. parameters mode
+    parts = m.text.split()
     if len(parts) == 3:
-        store.stickers = parts[1:]
-        return await m.reply("✅ Two stickers saved via parameters!", quote=True)
+        s.stickers = parts[1:]
+        return await m.reply("✅ Stickers saved via parameters!", quote=True)
 
-    # C. Wrong usage
+    # C. error
     await m.reply(
-        "❌ *Usage*\n"
-        "• Reply to a sticker and send `/setstickers` (do this twice)\n"
-        "• OR `/setstickers <id1> <id2>`",
-        parse_mode=ParseMode.MARKDOWN,
+        "Usage:\n• Reply to a sticker and send `/setstickers` (twice), "
+        "or `/setstickers <id1> <id2>`",
         quote=True,
     )
 
 
-# ── 8.  Video intake ────────────────────────────────────────────
+# ── 9.  Video intake ─────────────────────────────────────────────
 @app.on_message(filters.video & filters.private)
 async def on_video(_, m: Message):
     ep, q = parse_video(m)
     if not ep or not q:
         return await m.reply(
-            "❌ Caption or filename must include episode number **and** quality "
-            "(480p / 720p / 1080p).",
-            parse_mode=ParseMode.MARKDOWN,
+            "❌ Caption or filename must include episode number + 480p/720p/1080p.",
             quote=True,
         )
-    store = get_store(m.from_user.id)
-    store.videos[ep][q] = m.video.file_id
-    await m.reply(
-        f"📥 Saved **Episode {ep:02d}** • **{q}**",
-        parse_mode=ParseMode.MARKDOWN,
-    )
+    store(m.from_user.id).videos[ep][q] = m.video.file_id
+    await m.reply(f"📥 Saved **Episode {ep:02d} • {q}**", parse_mode=ParseMode.MARKDOWN)
 
 
-# ── 9.  /publish ────────────────────────────────────────────────
+# ── 10. /publish ────────────────────────────────────────────────
 @app.on_message(filters.command("publish") & filters.private)
 async def cmd_publish(_, m: Message):
-    s = get_store(m.from_user.id)
+    s = store(m.from_user.id)
 
+    # basic checks
     if not s.names:
-        return await m.reply("❌ Use /setnames first.", quote=True)
+        return await m.reply("❌ Run /setnames first.", quote=True)
     if len(s.stickers) < 2:
-        return await m.reply("❌ Set two stickers via /setstickers.", quote=True)
+        return await m.reply("❌ Need two stickers via /setstickers.", quote=True)
     if not s.videos:
-        return await m.reply("❌ No videos collected yet.", quote=True)
+        return await m.reply("❌ No videos collected.", quote=True)
 
     posted = 0
     for idx, title in enumerate(s.names, start=1):
-        await app.send_message(
-            m.chat.id, f"**{title}**", parse_mode=ParseMode.MARKDOWN
-        )
+        # bold episode title
+        await safe_call(app.send_message, m.chat.id, f"**{title}**", parse_mode=ParseMode.MARKDOWN)
 
+        # 3 qualities (NO caption, so original filename shows)
         for q in QUALITY_TAGS:
             if q in s.videos.get(idx, {}):
-                await app.send_video(m.chat.id, s.videos[idx][q], caption=q)
+                await safe_call(app.send_video, m.chat.id, s.videos[idx][q])
+                await asyncio.sleep(1)  # small delay between videos
 
-        await app.send_sticker(m.chat.id, s.stickers[0])
-        await app.send_sticker(m.chat.id, s.stickers[1])
+        # two stickers
+        await safe_call(app.send_sticker, m.chat.id, s.stickers[0])
+        await safe_call(app.send_sticker, m.chat.id, s.stickers[1])
+
         posted += 1
+        await asyncio.sleep(1.5)  # delay between episodes
 
-    await m.reply(
-        f"🎉 Posted **{posted}** episodes successfully!",
-        parse_mode=ParseMode.MARKDOWN,
-    )
+    await m.reply(f"🎉 Posted **{posted}** episodes successfully!", parse_mode=ParseMode.MARKDOWN)
