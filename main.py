@@ -1,7 +1,5 @@
 """
-main.py
-~~~~~~~
-Entry-point that simply starts the Pyrogram client from bot.py.
+main.py – entry-point for Video-Sort Bot
 """
 
 from bot import app
