@@ -10,7 +10,6 @@ from pyrogram.types import Message
 
 import config
 
-
 app = Client(
     "video_sort_bot",
     api_id=config.API_ID,
@@ -18,15 +17,20 @@ app = Client(
     bot_token=config.BOT_TOKEN,
 )
 
-QUALITY_TAGS = ["480p", "720p", "1080p"]
+QUALITY_TAGS = ["360p", "480p", "720p", "1080p"]
+QUALITY_ALIAS = {
+    "360p": "480p",
+    "480p": "480p",
+    "720p": "720p",
+    "1080p": "1080p"
+}
 
 
 class UserStore:
     def __init__(self):
-        self.names: List[str] = []  # episode titles
-        self.caption_format: str = ""  # caption template
-        self.stickers: List[str] = []  # two sticker file_ids
-        # videos[ep][quality] = (file_id, original_name)
+        self.names: List[str] = []
+        self.caption_format: str = ""
+        self.stickers: List[str] = []
         self.videos: Dict[int, Dict[str, Tuple[str, str]]] = defaultdict(dict)
         self.label: str = ""
 
@@ -38,7 +42,9 @@ def parse_video(msg: Message):
     text = (msg.caption or msg.video.file_name or "").lower()
     original = msg.caption or msg.video.file_name or "Video"
 
-    quality = next((q for q in QUALITY_TAGS if q in text), None)
+    quality_raw = next((q for q in QUALITY_TAGS if q in text), None)
+    quality = QUALITY_ALIAS.get(quality_raw)
+
     m = re.search(r"(?:episode|ep|e|s\d+e)(\d{1,2})", text, re.I)
     episode = int(m.group(1)) if m else None
 
@@ -91,7 +97,6 @@ async def cmd_setnames(_, m: Message):
 @app.on_message(filters.command("setformat") & filters.private)
 async def cmd_setformat(_, m: Message):
     lines = m.text.splitlines()
-    # Remove only the command line itself (no blank lines left)
     fmt = "\n".join(line for line in lines if not line.strip().startswith("/setformat")).strip()
 
     if not fmt:
@@ -127,7 +132,6 @@ async def cmd_setstickers(_, m: Message):
         s.stickers = parts[1:]
         return await m.reply("✅ Stickers saved via parameters!", quote=True)
 
-    # Wrong usage
     await m.reply(
         "Reply to a sticker with `/setstickers` (do this twice) **or** `/setstickers id1 id2`.",
         quote=True,
@@ -139,7 +143,7 @@ async def on_video(_, m: Message):
     ep, q, original = parse_video(m)
     if not ep or not q:
         return await m.reply(
-            "❌ Caption or filename must include episode number and 480p/720p/1080p.",
+            "❌ Caption or filename must include episode number and 480p / 720p / 1080p / 360p.",
             quote=True,
         )
     users[m.from_user.id].videos[ep][q] = (m.video.file_id, original)
@@ -153,7 +157,6 @@ async def on_video(_, m: Message):
 async def cmd_publish(_, m: Message):
     s = users[m.from_user.id]
 
-    # Mandatory checks
     if not s.names:
         return await m.reply("❌ Run /setnames first.", quote=True)
     if not s.caption_format:
@@ -165,14 +168,11 @@ async def cmd_publish(_, m: Message):
 
     posted = 0
     for idx, title in enumerate(s.names, start=1):
-        # Send episode title bolded
         await safe_call(app.send_message, m.chat.id, f"**{title}**", parse_mode=ParseMode.MARKDOWN)
 
-        for q in QUALITY_TAGS:
+        for q in ["480p", "720p", "1080p"]:
             if q in s.videos.get(idx, {}):
                 fid, original_name = s.videos[idx][q]
-
-                # Build caption from template (bold each line)
                 raw = s.caption_format.format(ep=f"{idx:02d}", quality=q)
                 caption = "\n".join(f"**{line}**" for line in raw.splitlines())
 
@@ -182,14 +182,13 @@ async def cmd_publish(_, m: Message):
                     fid,
                     caption=caption,
                     parse_mode=ParseMode.MARKDOWN,
-                    file_name=original_name  # Send with original filename (if supported)
+                    file_name=original_name
                 )
-                await asyncio.sleep(1)  # Delay between qualities
+                await asyncio.sleep(1)
 
-        # Send stickers after all qualities
         await safe_call(app.send_sticker, m.chat.id, s.stickers[0])
         await safe_call(app.send_sticker, m.chat.id, s.stickers[1])
         posted += 1
-        await asyncio.sleep(1.5)  # Delay between episodes
+        await asyncio.sleep(1.5)
 
     await m.reply(f"🎉 Posted **{posted}** episodes successfully!", parse_mode=ParseMode.MARKDOWN)
