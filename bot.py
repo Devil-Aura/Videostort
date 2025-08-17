@@ -45,7 +45,8 @@ def parse_video(msg: Message):
     quality_raw = next((q for q in QUALITY_TAGS if q in text), None)
     quality = QUALITY_ALIAS.get(quality_raw)
 
-    m = re.search(r"(?:episode|ep|e|s\d+e)(\d{1,2})", text, re.I)
+    # Updated regex: works with Episode 056, Ep.056, S01E056, etc.
+    m = re.search(r"(?:episode|ep|e|s\d+e)[\s\.\-]*0*(\d{1,4})", text, re.I)
     episode = int(m.group(1)) if m else None
 
     return episode, quality, original
@@ -192,3 +193,6 @@ async def cmd_publish(_, m: Message):
         await asyncio.sleep(1.5)
 
     await m.reply(f"🎉 Posted **{posted}** episodes successfully!", parse_mode=ParseMode.MARKDOWN)
+
+
+app.run()
