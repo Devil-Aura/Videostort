@@ -17,12 +17,17 @@ app = Client(
     bot_token=config.BOT_TOKEN,
 )
 
-QUALITY_TAGS = ["360p", "480p", "720p", "1080p"]
+# Support quality with or without "p"
+QUALITY_TAGS = ["360", "360p", "480", "480p", "720", "720p", "1080", "1080p"]
 QUALITY_ALIAS = {
+    "360": "480p",
     "360p": "480p",
+    "480": "480p",
     "480p": "480p",
+    "720": "720p",
     "720p": "720p",
-    "1080p": "1080p"
+    "1080": "1080p",
+    "1080p": "1080p",
 }
 
 
@@ -42,11 +47,12 @@ def parse_video(msg: Message):
     text = (msg.caption or msg.video.file_name or "").lower()
     original = msg.caption or msg.video.file_name or "Video"
 
+    # Detect quality
     quality_raw = next((q for q in QUALITY_TAGS if q in text), None)
     quality = QUALITY_ALIAS.get(quality_raw)
 
-    # Updated regex: works with Episode 056, Ep.056, S01E056, etc.
-    m = re.search(r"(?:episode|ep|e|s\d+e)[\s\.\-]*0*(\d{1,4})", text, re.I)
+    # Improved episode regex (supports S01E03, Ep.03, Episode 03, E03)
+    m = re.search(r"(?:s\d{1,2}e|episode|ep\.?|e)[\s\.\-]*0*(\d{1,4})", text, re.I)
     episode = int(m.group(1)) if m else None
 
     return episode, quality, original
@@ -144,7 +150,7 @@ async def on_video(_, m: Message):
     ep, q, original = parse_video(m)
     if not ep or not q:
         return await m.reply(
-            "❌ Caption or filename must include episode number and 480p / 720p / 1080p / 360p.",
+            "❌ Caption or filename must include episode number and quality (480p / 720p / 1080p).",
             quote=True,
         )
     users[m.from_user.id].videos[ep][q] = (m.video.file_id, original)
