@@ -38,6 +38,7 @@ class UserStore:
         self.stickers: List[str] = []
         self.videos: Dict[int, Dict[str, Tuple[str, str]]] = defaultdict(dict)
         self.label: str = ""
+        self.ignore: str = ""  # store user-defined ignore string
 
 
 users: Dict[int, UserStore] = defaultdict(UserStore)
@@ -47,12 +48,17 @@ def parse_video(msg: Message):
     text = (msg.caption or msg.video.file_name or "").lower()
     original = msg.caption or msg.video.file_name or "Video"
 
+    # Apply ignore filter
+    s = users[msg.from_user.id]
+    if s.ignore:
+        text = text.replace(s.ignore.lower(), "")
+
     # Detect quality
     quality_raw = next((q for q in QUALITY_TAGS if q in text), None)
     quality = QUALITY_ALIAS.get(quality_raw)
 
-    # Improved episode regex (supports S01E03, Ep.03, Episode 03, E03)
-    m = re.search(r"(?:s\d{1,2}e|episode|ep\.?|e)[\s\.\-]*0*(\d{1,4})", text, re.I)
+    # Episode regex (strict, avoids 7th/5th confusion)
+    m = re.search(r"(?:\bs\d{1,2}e|\bepisode|\bep\.?|\be)[\s\.\-]*0*(\d{1,4})\b", text, re.I)
     episode = int(m.group(1)) if m else None
 
     return episode, quality, original
@@ -70,7 +76,7 @@ async def safe_call(func, *args, **kwargs):
 async def cmd_start(_, m: Message):
     await m.reply(
         "👋 **Video-Sort Bot**\n"
-        "`/sort` ➜ `/setnames` ➜ `/setformat` ➜ `/setstickers` ➜ `/publish`",
+        "`/sort` ➜ `/setnames` ➜ `/setformat` ➜ `/setstickers` ➜ `/ignore <anime name>` ➜ `/publish`",
         parse_mode=ParseMode.MARKDOWN,
         quote=True,
     )
@@ -85,9 +91,10 @@ async def cmd_sort(_, m: Message):
     s.stickers.clear()
     s.videos.clear()
     s.label = label
+    s.ignore = ""  # clear ignore text at new session
     await m.reply(
         f"✅ Sorting session **{label}** started.\n"
-        "Forward videos, then do `/setnames`, `/setformat`, `/setstickers`, `/publish`.",
+        "Forward videos, then do `/setnames`, `/setformat`, `/setstickers`, `/ignore <anime name>`, `/publish`.",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -143,6 +150,15 @@ async def cmd_setstickers(_, m: Message):
         "Reply to a sticker with `/setstickers` (do this twice) **or** `/setstickers id1 id2`.",
         quote=True,
     )
+
+
+@app.on_message(filters.command("ignore") & filters.private)
+async def cmd_ignore(_, m: Message):
+    text = " ".join(m.command[1:]).strip()
+    if not text:
+        return await m.reply("❌ Usage: `/ignore <anime name>`", quote=True)
+    users[m.from_user.id].ignore = text.lower()
+    await m.reply(f"✅ Now ignoring: **{text}**", parse_mode=ParseMode.MARKDOWN)
 
 
 @app.on_message(filters.video & filters.private)
