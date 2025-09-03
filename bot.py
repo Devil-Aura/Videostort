@@ -39,6 +39,7 @@ class UserStore:
         self.videos: Dict[int, Dict[str, Tuple[str, str]]] = defaultdict(dict)
         self.label: str = ""
         self.ignore: str = ""  # store user-defined ignore string
+        self.start_ep: int = 1  # default starting episode
 
 
 users: Dict[int, UserStore] = defaultdict(UserStore)
@@ -66,10 +67,9 @@ def parse_video(msg: Message):
 
     episode = None
     if m:
-        # Extract only the last number group (to avoid 227 issue)
         digits = re.findall(r"\d{1,4}", m.group(0))
         if digits:
-            episode = int(digits[-1])  # take last number = actual episode
+            episode = int(digits[-1])
 
     return episode, quality, original
 
@@ -101,7 +101,8 @@ async def cmd_sort(_, m: Message):
     s.stickers.clear()
     s.videos.clear()
     s.label = label
-    s.ignore = ""  # clear ignore text at new session
+    s.ignore = ""
+    s.start_ep = 1
     await m.reply(
         f"✅ Sorting session **{label}** started.\n"
         "Forward videos, then do `/setnames`, `/setformat`, `/setstickers`, `/ignore <anime name>`, `/publish`.",
@@ -114,15 +115,24 @@ async def cmd_setnames(_, m: Message):
     titles = [ln.strip() for ln in m.text.split("\n")[1:] if ln.strip()]
     if not titles:
         return await m.reply("❌ Paste episode titles after the command.", quote=True)
-    users[m.from_user.id].names = titles
-    await m.reply(f"✅ Stored **{len(titles)}** episode names.", parse_mode=ParseMode.MARKDOWN)
+
+    s = users[m.from_user.id]
+    s.names = titles
+
+    # Detect starting episode number
+    m_num = re.search(r"\d{1,4}", titles[0])
+    s.start_ep = int(m_num.group(0)) if m_num else 1
+
+    await m.reply(
+        f"✅ Stored **{len(titles)}** episode names.\nStarting episode: **{s.start_ep}**",
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 
 @app.on_message(filters.command("setformat") & filters.private)
 async def cmd_setformat(_, m: Message):
     lines = m.text.splitlines()
     fmt = "\n".join(line for line in lines if not line.strip().startswith("/setformat")).strip()
-
     if not fmt:
         return await m.reply("❌ Please provide a caption format after the command.", quote=True)
 
@@ -137,8 +147,6 @@ async def cmd_setformat(_, m: Message):
 @app.on_message(filters.command(["setstickers", "addstickers"]) & filters.private)
 async def cmd_setstickers(_, m: Message):
     s = users[m.from_user.id]
-
-    # Reply-to-sticker mode
     if m.reply_to_message and m.reply_to_message.sticker:
         fid = m.reply_to_message.sticker.file_id
         if fid in s.stickers:
@@ -150,7 +158,6 @@ async def cmd_setstickers(_, m: Message):
                 if len(s.stickers) == 1 else "✅ Sticker 2 saved – done!")
         return await m.reply(text, quote=True)
 
-    # Parameter mode
     parts = m.text.split()
     if len(parts) == 3:
         s.stickers = parts[1:]
@@ -189,7 +196,6 @@ async def on_video(_, m: Message):
 @app.on_message(filters.command("publish") & filters.private)
 async def cmd_publish(_, m: Message):
     s = users[m.from_user.id]
-
     if not s.names:
         return await m.reply("❌ Run /setnames first.", quote=True)
     if not s.caption_format:
@@ -200,15 +206,17 @@ async def cmd_publish(_, m: Message):
         return await m.reply("❌ No videos collected.", quote=True)
 
     posted = 0
-    for idx, title in enumerate(s.names, start=1):
+    start_ep = s.start_ep
+
+    for offset, title in enumerate(s.names):
+        ep_num = start_ep + offset
         await safe_call(app.send_message, m.chat.id, f"**{title}**", parse_mode=ParseMode.MARKDOWN)
 
         for q in ["480p", "720p", "1080p"]:
-            if q in s.videos.get(idx, {}):
-                fid, original_name = s.videos[idx][q]
-                raw = s.caption_format.format(ep=f"{idx:02d}", quality=q)
+            if q in s.videos.get(ep_num, {}):
+                fid, original_name = s.videos[ep_num][q]
+                raw = s.caption_format.format(ep=f"{ep_num:02d}", quality=q)
                 caption = "\n".join(f"**{line}**" for line in raw.splitlines())
-
                 await safe_call(
                     app.send_video,
                     m.chat.id,
