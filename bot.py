@@ -73,24 +73,6 @@ def parse_video(msg: Message):
 
     return episode, quality, original
 
-    episode = None
-    if m:
-        # Extract only the last number group (to avoid 227 issue)
-        digits = re.findall(r"\d{1,4}", m.group(0))
-        if digits:
-            episode = int(digits[-1])  # take last number = actual episode
-
-    return episode, quality, original
-
-    episode = None
-    if m:
-        # Extract only the last number group (to avoid 227 issue)
-        digits = re.findall(r"\d{1,4}", m.group(0))
-        if digits:
-            episode = int(digits[-1])  # take last number = actual episode
-
-    return episode, quality, original
-
 
 async def safe_call(func, *args, **kwargs):
     while True:
