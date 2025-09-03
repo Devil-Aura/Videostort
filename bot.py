@@ -57,9 +57,37 @@ def parse_video(msg: Message):
     quality_raw = next((q for q in QUALITY_TAGS if q in text), None)
     quality = QUALITY_ALIAS.get(quality_raw)
 
-    # Episode regex (strict, avoids 7th/5th confusion)
-    m = re.search(r"(?:\bs\d{1,2}e|\bepisode|\bep\.?|\be)[\s\.\-]*0*(\d{1,4})\b", text, re.I)
-    episode = int(m.group(1)) if m else None
+    # Episode regex (supports SxxEyy, Episode xx, Ep xx, E xx)
+    m = re.search(
+        r"(s\d{1,2}e\d{1,4}|episode\s*0*\d{1,4}|ep\.?\s*0*\d{1,4}|\be\s*0*\d{1,4})",
+        text,
+        re.I
+    )
+
+    episode = None
+    if m:
+        # Extract only the last number group (to avoid 227 issue)
+        digits = re.findall(r"\d{1,4}", m.group(0))
+        if digits:
+            episode = int(digits[-1])  # take last number = actual episode
+
+    return episode, quality, original
+
+    episode = None
+    if m:
+        # Extract only the last number group (to avoid 227 issue)
+        digits = re.findall(r"\d{1,4}", m.group(0))
+        if digits:
+            episode = int(digits[-1])  # take last number = actual episode
+
+    return episode, quality, original
+
+    episode = None
+    if m:
+        # Extract only the last number group (to avoid 227 issue)
+        digits = re.findall(r"\d{1,4}", m.group(0))
+        if digits:
+            episode = int(digits[-1])  # take last number = actual episode
 
     return episode, quality, original
 
