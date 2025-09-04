@@ -6,7 +6,7 @@ from typing import Dict, List, Tuple
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 import config
 
@@ -40,6 +40,7 @@ class UserStore:
         self.label: str = ""
         self.ignore: str = ""  # store user-defined ignore string
         self.start_ep: int = 1  # default starting episode
+        self.ep_mode: str = "normal"  # global toggle: normal or 001
 
 
 users: Dict[int, UserStore] = defaultdict(UserStore)
@@ -58,18 +59,24 @@ def parse_video(msg: Message):
     quality_raw = next((q for q in QUALITY_TAGS if q in text), None)
     quality = QUALITY_ALIAS.get(quality_raw)
 
-    # Episode regex (supports SxxEyy, Episode xx, Ep xx, E xx)
-    m = re.search(
-        r"(s\d{1,2}e\d{1,4}|episode\s*0*\d{1,4}|ep\.?\s*0*\d{1,4}|\be\s*0*\d{1,4})",
-        text,
-        re.I
-    )
-
     episode = None
-    if m:
-        digits = re.findall(r"\d{1,4}", m.group(0))
-        if digits:
-            episode = int(digits[-1])
+    if s.ep_mode == "normal":
+        # Normal regex (E01, Ep 01, etc.)
+        m = re.search(
+            r"(s\d{1,2}e\d{1,4}|episode\s*0*\d{1,4}|ep\.?\s*0*\d{1,4}|\be\s*0*\d{1,4})",
+            text,
+            re.I
+        )
+        if m:
+            digits = re.findall(r"\d{1,4}", m.group(0))
+            if digits:
+                episode = int(digits[-1])
+
+    elif s.ep_mode == "001":
+        # Look for (039), (040), etc.
+        m = re.search(r"\((\d{3,4})\)", text)
+        if m:
+            episode = int(m.group(1))
 
     return episode, quality, original
 
@@ -86,7 +93,8 @@ async def safe_call(func, *args, **kwargs):
 async def cmd_start(_, m: Message):
     await m.reply(
         "👋 **Video-Sort Bot**\n"
-        "`/sort` ➜ `/setnames` ➜ `/setformat` ➜ `/setstickers` ➜ `/ignore <anime name>` ➜ `/publish`",
+        "`/sort` ➜ `/setnames` ➜ `/setformat` ➜ `/setstickers` ➜ `/ignore <anime name>` ➜ `/publish`\n\n"
+        "⚙️ Use `/epmode` to toggle **episode detection mode** (Normal / 001).",
         parse_mode=ParseMode.MARKDOWN,
         quote=True,
     )
@@ -102,7 +110,7 @@ async def cmd_sort(_, m: Message):
     s.videos.clear()
     s.label = label
     s.ignore = ""
-    s.start_ep = 1
+    s.start_ep = 1  # do not reset ep_mode here
     await m.reply(
         f"✅ Sorting session **{label}** started.\n"
         "Forward videos, then do `/setnames`, `/setformat`, `/setstickers`, `/ignore <anime name>`, `/publish`.",
@@ -176,6 +184,44 @@ async def cmd_ignore(_, m: Message):
         return await m.reply("❌ Usage: `/ignore <anime name>`", quote=True)
     users[m.from_user.id].ignore = text.lower()
     await m.reply(f"✅ Now ignoring: **{text}**", parse_mode=ParseMode.MARKDOWN)
+
+
+@app.on_message(filters.command("epmode") & filters.private)
+async def cmd_epmode(_, m: Message):
+    s = users[m.from_user.id]
+    current = s.ep_mode
+
+    normal_btn = "✅ Normal" if current == "normal" else "Normal"
+    mode001_btn = "✅ 001 Mode" if current == "001" else "001 Mode"
+
+    buttons = [
+        [InlineKeyboardButton(normal_btn, callback_data="epmode_normal"),
+         InlineKeyboardButton(mode001_btn, callback_data="epmode_001")]
+    ]
+
+    await m.reply("⚙️ **Select Episode Detection Mode**", reply_markup=InlineKeyboardMarkup(buttons))
+
+
+@app.on_callback_query(filters.regex(r"^epmode_"))
+async def cb_epmode(_, cq: CallbackQuery):
+    s = users[cq.from_user.id]
+    mode = cq.data.split("_")[1]
+
+    s.ep_mode = mode
+    normal_btn = "✅ Normal" if mode == "normal" else "Normal"
+    mode001_btn = "✅ 001 Mode" if mode == "001" else "001 Mode"
+
+    buttons = [
+        [InlineKeyboardButton(normal_btn, callback_data="epmode_normal"),
+         InlineKeyboardButton(mode001_btn, callback_data="epmode_001")]
+    ]
+
+    await cq.message.edit_text(
+        f"⚙️ **Episode detection mode set to:** `{s.ep_mode.upper()}`",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await cq.answer("Mode updated!")
 
 
 @app.on_message(filters.video & filters.private)
