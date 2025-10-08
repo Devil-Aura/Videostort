@@ -94,6 +94,11 @@ async def safe_call(func, *args, **kwargs):
             await asyncio.sleep(e.value + 1)
 
 
+def is_command(text: str) -> bool:
+    """Check if text is a command"""
+    return text and text.startswith('/')
+
+
 def setup_quality_sort_handlers(app: Client):
     """Setup all quality sort handlers"""
     
@@ -206,7 +211,7 @@ def setup_quality_sort_handlers(app: Client):
 
         buttons = [
             [InlineKeyboardButton(normal_btn, callback_data="q_epmode_normal"),
-            InlineKeyboardButton(mode001_btn, callback_data="q_epmode_001")],
+            [InlineKeyboardButton(mode001_btn, callback_data="q_epmode_001")],
             [InlineKeyboardButton("❌ Cancel", callback_data="q_cancel")]
         ]
 
@@ -237,17 +242,53 @@ def setup_quality_sort_handlers(app: Client):
         )
         await cq.answer()
 
-    # Handle non-command messages for powered by post and videos
-    @app.on_message(filters.private & ~filters.command)
-    async def handle_non_command_messages(_, m: Message):
-        """Handle powered by post and videos"""
+    # Handle non-command messages for powered by post
+    @app.on_message(filters.private & filters.text)
+    async def handle_text_messages(_, m: Message):
+        """Handle text messages for powered by post"""
         user_id = m.from_user.id
         if user_id not in quality_sessions or not quality_sessions[user_id].is_active:
             return
         
         session = quality_sessions[user_id]
         
+        # Skip if this is a command
+        if m.text and m.text.startswith('/'):
+            return
+            
         # Handle powered by post
+        if session.waiting_for_powered_by:
+            session.powered_by_post = m
+            session.waiting_for_powered_by = False
+            session.waiting_for_format = True
+            
+            await m.reply(
+                "✅ **Powered By Post Saved!**\n\n"
+                "**Step 2/3:** Now set the caption format using:\n\n"
+                "`/setformatq`\n"
+                "➥ Anime Name [S02]\n"
+                "🎬 Episode - {ep}\n"
+                "🎧 Language - Hindi #Official\n"
+                "🔎 Quality : {quality}\n"
+                "📡 Powered by : @CrunchyRollChannel\n\n"
+                "_Replace with your actual format_",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📋 Set Format Now", callback_data="q_set_format")
+                ]])
+            )
+
+    # Handle media messages for powered by post and videos
+    @app.on_message(filters.private & (filters.photo | filters.video | filters.document))
+    async def handle_media_messages(_, m: Message):
+        """Handle media messages for powered by post and videos"""
+        user_id = m.from_user.id
+        if user_id not in quality_sessions or not quality_sessions[user_id].is_active:
+            return
+        
+        session = quality_sessions[user_id]
+        
+        # Handle powered by post (any media message when waiting for it)
         if session.waiting_for_powered_by:
             session.powered_by_post = m
             session.waiting_for_powered_by = False
@@ -270,7 +311,7 @@ def setup_quality_sort_handlers(app: Client):
             )
             return
         
-        # Handle videos
+        # Handle videos for episode collection
         if m.video and session.caption_format:
             text = (m.caption or m.video.file_name or "").lower()
             episode, quality = parse_episode_quality(text, session.ep_mode)
