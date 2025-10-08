@@ -280,5 +280,8 @@ async def cmd_publish(_, m: Message):
 
     await m.reply(f"🎉 Posted **{posted}** episodes successfully!", parse_mode=ParseMode.MARKDOWN)
 
+# Import and setup quality sort bot
+from quality_sort_bot import setup_quality_sort_handlers
+setup_quality_sort_handlers(app)
 
 app.run()
