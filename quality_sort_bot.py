@@ -225,8 +225,21 @@ def setup_quality_sort_handlers(app: Client):
         await cq.message.edit_text("❌ **Quality sort session cancelled.**")
         await cq.answer()
 
+    @app.on_callback_query(filters.regex("^q_set_format$"))
+    async def cb_q_set_format(_, cq):
+        """Handle set format callback"""
+        await cq.message.reply(
+            "📝 **Set Caption Format:**\n\n"
+            "Use this command with your format:\n\n"
+            "```/setformatq\n➥ Anime Name [S02]\n🎬 Episode - {ep}\n🎧 Language - Hindi #Official\n🔎 Quality : {quality}\n📡 Powered by : @CrunchyRollChannel```\n\n"
+            "**Important:** Keep `{ep}` and `{quality}` in your format!",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await cq.answer()
+
+    # Handle non-command messages for powered by post and videos
     @app.on_message(filters.private & ~filters.command)
-    async def handle_powered_by_post(_, m: Message):
+    async def handle_non_command_messages(_, m: Message):
         """Handle powered by post and videos"""
         user_id = m.from_user.id
         if user_id not in quality_sessions or not quality_sessions[user_id].is_active:
@@ -235,7 +248,7 @@ def setup_quality_sort_handlers(app: Client):
         session = quality_sessions[user_id]
         
         # Handle powered by post
-        if session.waiting_for_powered_by and not m.video:
+        if session.waiting_for_powered_by:
             session.powered_by_post = m
             session.waiting_for_powered_by = False
             session.waiting_for_format = True
@@ -286,18 +299,6 @@ def setup_quality_sort_handlers(app: Client):
                 f"Continue sending episodes or use `/publishq` when done.",
                 parse_mode=ParseMode.MARKDOWN
             )
-
-    @app.on_callback_query(filters.regex("^q_set_format$"))
-    async def cb_q_set_format(_, cq):
-        """Handle set format callback"""
-        await cq.message.reply(
-            "📝 **Set Caption Format:**\n\n"
-            "Use this command with your format:\n\n"
-            "```/setformatq\n➥ Anime Name [S02]\n🎬 Episode - {ep}\n🎧 Language - Hindi #Official\n🔎 Quality : {quality}\n📡 Powered by : @CrunchyRollChannel```\n\n"
-            "**Important:** Keep `{ep}` and `{quality}` in your format!",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        await cq.answer()
 
     @app.on_message(filters.command("publishq") & filters.private)
     async def cmd_publishq(_, m: Message):
