@@ -1,10 +1,10 @@
 import asyncio
 import re
 from collections import defaultdict
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 
 from pyrogram import Client, filters
-from pyrogram.enums import ParseMode
+from pyrogram.enums import ParseMode, MessageMediaType
 from pyrogram.errors import FloodWait
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -42,6 +42,8 @@ class QualitySortSession:
         self.episode_names: Dict[int, str] = {}
         self.is_active: bool = False
         self.ep_mode: str = "normal"  # normal or 001
+        self.waiting_for_powered_by: bool = False
+        self.waiting_for_format: bool = False
 
 
 quality_sessions: Dict[int, QualitySortSession] = {}
@@ -77,7 +79,7 @@ def parse_episode_quality(text: str, ep_mode: str = "normal") -> Tuple[Optional[
         else:
             # Also try to find 3-4 digit numbers
             m = re.search(r"\b(\d{3,4})\b", text)
-            if m:
+            if m and 1 <= int(m.group(1)) <= 999:
                 episode = int(m.group(1))
     
     return episode, quality
@@ -104,18 +106,15 @@ def setup_quality_sort_handlers(app: Client):
         quality_sessions[user_id] = QualitySortSession()
         session = quality_sessions[user_id]
         session.is_active = True
+        session.waiting_for_powered_by = True
         
         await m.reply(
             "🎬 **Quality Sort Session Started**\n\n"
-            "📝 **Next Steps:**\n"
-            "1. Send the **Powered By Post** (the message you want to include at start)\n"
-            "2. Use `/setformatq` to set caption format\n"
-            "3. Send your episodes with quality tags (480p, 720p, 1080p)\n"
-            "4. Use `/publishq` when done\n\n"
-            "⚙️ Use `/epmodeq` to change episode detection mode",
+            "📝 **Step 1/3:** Please send the **Powered By Post** (the message you want to include at the beginning)\n\n"
+            "_This can be any message - text, photo, video, or document with caption_",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("📋 Set Format", callback_data="set_format_q")
+                InlineKeyboardButton("❌ Cancel", callback_data="q_cancel")
             ]])
         )
 
@@ -126,10 +125,16 @@ def setup_quality_sort_handlers(app: Client):
         if user_id not in quality_sessions or not quality_sessions[user_id].is_active:
             return await m.reply("❌ Start a session with `/qualitysort` first.")
         
+        session = quality_sessions[user_id]
+        
+        if not session.powered_by_post:
+            return await m.reply("❌ Please send the Powered By post first.")
+        
         lines = m.text.splitlines()
         if len(lines) < 2:
             return await m.reply(
-                "❌ Please provide format after command:\n"
+                "❌ **Please provide format after command:**\n\n"
+                "**Example:**\n"
                 "`/setformatq`\n"
                 "➥ Anime Name [S02]\n"
                 "🎬 Episode - {ep}\n"
@@ -143,13 +148,18 @@ def setup_quality_sort_handlers(app: Client):
         if "{ep}" not in fmt or "{quality}" not in fmt:
             return await m.reply("❌ Format must include `{ep}` and `{quality}` placeholders.")
         
-        quality_sessions[user_id].caption_format = fmt
+        session.caption_format = fmt
+        session.waiting_for_format = False
+        
         await m.reply(
             "✅ **Caption format saved!**\n\n"
-            "Now you can start sending episodes. Make sure filenames include:\n"
+            "**Step 3/3:** Now you can start sending episodes.\n\n"
+            "**Make sure filenames include:**\n"
             "• Episode number (E01, Episode 1, etc.)\n"  
             "• Quality (480p, 720p, 1080p)\n\n"
-            "Use `/publishq` when done.",
+            "**When done, use:** `/publishq`\n"
+            "**Check status:** `/statusq`\n"
+            "**Cancel:** `/cancelq`",
             parse_mode=ParseMode.MARKDOWN
         )
 
@@ -168,7 +178,8 @@ def setup_quality_sort_handlers(app: Client):
 
         buttons = [
             [InlineKeyboardButton(normal_btn, callback_data="q_epmode_normal"),
-            InlineKeyboardButton(mode001_btn, callback_data="q_epmode_001")]
+            InlineKeyboardButton(mode001_btn, callback_data="q_epmode_001")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="q_cancel")]
         ]
 
         await m.reply(
@@ -183,7 +194,7 @@ def setup_quality_sort_handlers(app: Client):
         """Handle episode mode callback"""
         user_id = cq.from_user.id
         if user_id not in quality_sessions:
-            await cq.answer("Session expired. Start with /qualitysort")
+            await cq.answer("Session expired. Start with /qualitysort", show_alert=True)
             return
         
         session = quality_sessions[user_id]
@@ -195,7 +206,8 @@ def setup_quality_sort_handlers(app: Client):
 
         buttons = [
             [InlineKeyboardButton(normal_btn, callback_data="q_epmode_normal"),
-            InlineKeyboardButton(mode001_btn, callback_data="q_epmode_001")]
+            InlineKeyboardButton(mode001_btn, callback_data="q_epmode_001")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="q_cancel")]
         ]
 
         await cq.message.edit_text(
@@ -204,73 +216,88 @@ def setup_quality_sort_handlers(app: Client):
         )
         await cq.answer("Mode updated!")
 
-    @app.on_callback_query(filters.regex("^set_format_q$"))
-    async def cb_set_format_q(_, cq):
-        """Handle set format callback"""
-        await cq.message.reply(
-            "📝 **Set Caption Format:**\n\n"
-            "Use `/setformatq` followed by your format:\n"
-            "```/setformatq\n➥ Anime Name [S02]\n🎬 Episode - {ep}\n🎧 Language - Hindi #Official\n🔎 Quality : {quality}\n📡 Powered by : @CrunchyRollChannel```",
-            parse_mode=ParseMode.MARKDOWN
-        )
+    @app.on_callback_query(filters.regex("^q_cancel$"))
+    async def cb_q_cancel(_, cq):
+        """Handle cancel callback"""
+        user_id = cq.from_user.id
+        if user_id in quality_sessions:
+            del quality_sessions[user_id]
+        await cq.message.edit_text("❌ **Quality sort session cancelled.**")
         await cq.answer()
 
-    @app.on_message(filters.private & ~filters.command & filters.text)
+    @app.on_message(filters.private & ~filters.command)
     async def handle_powered_by_post(_, m: Message):
-        """Handle powered by post"""
+        """Handle powered by post and videos"""
         user_id = m.from_user.id
         if user_id not in quality_sessions or not quality_sessions[user_id].is_active:
             return
         
         session = quality_sessions[user_id]
         
-        # If powered by post not set and this is not a command
-        if not session.powered_by_post and not m.text.startswith('/'):
+        # Handle powered by post
+        if session.waiting_for_powered_by and not m.video:
             session.powered_by_post = m
+            session.waiting_for_powered_by = False
+            session.waiting_for_format = True
+            
             await m.reply(
                 "✅ **Powered By Post Saved!**\n\n"
-                "Now set the caption format using `/setformatq`",
+                "**Step 2/3:** Now set the caption format using:\n\n"
+                "`/setformatq`\n"
+                "➥ Anime Name [S02]\n"
+                "🎬 Episode - {ep}\n"
+                "🎧 Language - Hindi #Official\n"
+                "🔎 Quality : {quality}\n"
+                "📡 Powered by : @CrunchyRollChannel\n\n"
+                "_Replace with your actual format_",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📋 Set Format Now", callback_data="q_set_format")
+                ]])
+            )
+            return
+        
+        # Handle videos
+        if m.video and session.caption_format:
+            text = (m.caption or m.video.file_name or "").lower()
+            episode, quality = parse_episode_quality(text, session.ep_mode)
+            
+            if not episode:
+                await m.reply("❌ **Could not detect episode number!**\n\nMake sure filename/caption contains episode number (E01, Episode 1, etc.)")
+                return
+                
+            if not quality:
+                await m.reply("❌ **Could not detect quality!**\n\nMake sure filename/caption contains quality (480p, 720p, 1080p)")
+                return
+            
+            # Store video
+            session.videos[episode][quality] = m.video.file_id
+            
+            # Store episode name if available
+            if m.caption:
+                session.episode_names[episode] = m.caption.split('\n')[0]
+            
+            episode_count = len(session.videos)
+            await m.reply(
+                f"✅ **Episode Saved Successfully!**\n\n"
+                f"**Episode:** {episode:03d}\n"
+                f"**Quality:** {quality}\n"
+                f"**Total Episodes:** {episode_count}\n\n"
+                f"Continue sending episodes or use `/publishq` when done.",
                 parse_mode=ParseMode.MARKDOWN
             )
 
-    @app.on_message(filters.video & filters.private)
-    async def handle_quality_video(_, m: Message):
-        """Handle video messages for quality sort"""
-        user_id = m.from_user.id
-        if user_id not in quality_sessions or not quality_sessions[user_id].is_active:
-            return
-        
-        session = quality_sessions[user_id]
-        
-        if not session.caption_format:
-            await m.reply("❌ Set caption format first with `/setformatq`")
-            return
-        
-        text = (m.caption or m.video.file_name or "").lower()
-        episode, quality = parse_episode_quality(text, session.ep_mode)
-        
-        if not episode:
-            await m.reply("❌ Could not detect episode number from filename/caption")
-            return
-            
-        if not quality:
-            await m.reply("❌ Could not detect quality (480p/720p/1080p) from filename/caption")
-            return
-        
-        # Store video
-        session.videos[episode][quality] = m.video.file_id
-        
-        # Store episode name if available
-        if m.caption:
-            session.episode_names[episode] = m.caption.split('\n')[0]
-        
-        await m.reply(
-            f"✅ **Saved**\n"
-            f"**Episode:** {episode:02d}\n"
-            f"**Quality:** {quality}\n"
-            f"**Total episodes:** {len(session.videos)}",
+    @app.on_callback_query(filters.regex("^q_set_format$"))
+    async def cb_q_set_format(_, cq):
+        """Handle set format callback"""
+        await cq.message.reply(
+            "📝 **Set Caption Format:**\n\n"
+            "Use this command with your format:\n\n"
+            "```/setformatq\n➥ Anime Name [S02]\n🎬 Episode - {ep}\n🎧 Language - Hindi #Official\n🔎 Quality : {quality}\n📡 Powered by : @CrunchyRollChannel```\n\n"
+            "**Important:** Keep `{ep}` and `{quality}` in your format!",
             parse_mode=ParseMode.MARKDOWN
         )
+        await cq.answer()
 
     @app.on_message(filters.command("publishq") & filters.private)
     async def cmd_publishq(_, m: Message):
@@ -283,15 +310,18 @@ def setup_quality_sort_handlers(app: Client):
         
         # Validate session
         if not session.powered_by_post:
-            return await m.reply("❌ Send the Powered By post first.")
+            return await m.reply("❌ Please send the Powered By post first.")
         if not session.caption_format:
             return await m.reply("❌ Set caption format with `/setformatq` first.")
         if not session.videos:
             return await m.reply("❌ No episodes collected. Send some videos first.")
         
-        await m.reply("🚀 Starting publication...")
+        await m.reply("🚀 **Starting publication process...**\n\nThis may take a while depending on the number of episodes.")
         
         try:
+            total_episodes = len(session.videos)
+            posted_count = 0
+            
             # Send powered by post first (forward as is)
             if session.powered_by_post:
                 await safe_call(
@@ -300,7 +330,7 @@ def setup_quality_sort_handlers(app: Client):
                     session.powered_by_post.chat.id,
                     session.powered_by_post.id
                 )
-                await asyncio.sleep(1)
+                await asyncio.sleep(2)
             
             # Get all episodes and sort them
             episodes = sorted(session.videos.keys())
@@ -308,21 +338,26 @@ def setup_quality_sort_handlers(app: Client):
             
             # Process by quality first
             for quality in qualities:
+                has_episodes_in_quality = any(quality in session.videos[ep] for ep in episodes)
+                
+                if not has_episodes_in_quality:
+                    continue
+                
                 # Send broader sticker
                 await safe_call(app.send_sticker, m.chat.id, BROADER_STICKER)
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1)
                 
                 # Send quality sticker
                 if quality in QUALITY_STICKERS:
                     await safe_call(app.send_sticker, m.chat.id, QUALITY_STICKERS[quality])
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(1)
                 
                 # Send all episodes for this quality
                 for episode in episodes:
                     if quality in session.videos[episode]:
                         file_id = session.videos[episode][quality]
                         caption = session.caption_format.format(
-                            ep=f"{episode:02d}", 
+                            ep=f"{episode:03d}", 
                             quality=quality
                         )
                         
@@ -333,26 +368,28 @@ def setup_quality_sort_handlers(app: Client):
                             caption=caption,
                             parse_mode=ParseMode.MARKDOWN
                         )
-                        await asyncio.sleep(1)
-                
-                await asyncio.sleep(1)
+                        posted_count += 1
+                        await asyncio.sleep(2)  # Avoid flood wait
             
-            # Send broader sticker
+            # Send final stickers
             await safe_call(app.send_sticker, m.chat.id, BROADER_STICKER)
-            await asyncio.sleep(0.5)
-            
-            # Send end season sticker
+            await asyncio.sleep(1)
             await safe_call(app.send_sticker, m.chat.id, END_SEASON_STICKER)
             
-            await m.reply(f"✅ **Publication Complete!**\nPosted {len(episodes)} episodes in all qualities.")
-            
-        except Exception as e:
-            await m.reply(f"❌ Error during publication: {str(e)}")
-        
-        finally:
             # Cleanup session
             if user_id in quality_sessions:
                 del quality_sessions[user_id]
+            
+            await m.reply(
+                f"✅ **Publication Complete!**\n\n"
+                f"**Total Episodes Processed:** {total_episodes}\n"
+                f"**Total Videos Posted:** {posted_count}\n"
+                f"**Qualities:** 480p, 720p, 1080p\n\n"
+                f"Use `/qualitysort` to start a new session."
+            )
+            
+        except Exception as e:
+            await m.reply(f"❌ **Error during publication:** `{str(e)}`\n\nSession preserved. You can try again.")
 
     @app.on_message(filters.command("cancelq") & filters.private)
     async def cmd_cancelq(_, m: Message):
@@ -360,7 +397,7 @@ def setup_quality_sort_handlers(app: Client):
         user_id = m.from_user.id
         if user_id in quality_sessions:
             del quality_sessions[user_id]
-            await m.reply("❌ Quality sort session cancelled.")
+            await m.reply("❌ **Quality sort session cancelled.**")
         else:
             await m.reply("❌ No active quality sort session.")
 
@@ -369,20 +406,45 @@ def setup_quality_sort_handlers(app: Client):
         """Check quality sort session status"""
         user_id = m.from_user.id
         if user_id not in quality_sessions or not quality_sessions[user_id].is_active:
-            return await m.reply("❌ No active quality sort session.")
+            return await m.reply("❌ No active quality sort session. Start with `/qualitysort`")
         
         session = quality_sessions[user_id]
+        
+        # Count videos by quality
+        quality_count = {"480p": 0, "720p": 0, "1080p": 0}
+        for ep_data in session.videos.values():
+            for quality in ep_data:
+                if quality in quality_count:
+                    quality_count[quality] += 1
+        
         status_msg = [
             "📊 **Quality Sort Session Status**",
-            f"✅ Powered By Post: {'Set' if session.powered_by_post else 'Not Set'}",
-            f"✅ Caption Format: {'Set' if session.caption_format else 'Not Set'}",
-            f"📹 Episodes Collected: {len(session.videos)}",
-            f"⚙️ Episode Mode: {session.ep_mode.upper()}",
+            f"✅ **Powered By Post:** {'✅ Set' if session.powered_by_post else '❌ Not Set'}",
+            f"✅ **Caption Format:** {'✅ Set' if session.caption_format else '❌ Not Set'}",
+            f"📹 **Episodes Collected:** {len(session.videos)}",
+            f"⚙️ **Episode Mode:** {session.ep_mode.upper()}",
+            "",
+            "**Videos by Quality:**",
+            f"• 480p: {quality_count['480p']} episodes",
+            f"• 720p: {quality_count['720p']} episodes", 
+            f"• 1080p: {quality_count['1080p']} episodes",
             "",
             "**Next Steps:**",
-            "• Send more episodes" if not session.powered_by_post else "",
-            "• Set format with `/setformatq`" if not session.caption_format else "",
-            "• Use `/publishq` when ready" if session.powered_by_post and session.caption_format else "",
         ]
         
-        await m.reply("\n".join(filter(None, status_msg)), parse_mode=ParseMode.MARKDOWN)
+        if not session.powered_by_post:
+            status_msg.append("• Send the Powered By post")
+        elif not session.caption_format:
+            status_msg.append("• Use `/setformatq` to set caption format")
+        else:
+            status_msg.append("• Send more episodes or use `/publishq` when ready")
+        
+        status_msg.extend([
+            "",
+            "**Commands:**",
+            "• `/publishq` - Publish all episodes", 
+            "• `/epmodeq` - Change episode detection",
+            "• `/cancelq` - Cancel session"
+        ])
+        
+        await m.reply("\n".join(status_msg), parse_mode=ParseMode.MARKDOWN)
