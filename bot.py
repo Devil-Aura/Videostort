@@ -112,7 +112,7 @@ def parse_quality_video(msg: Message, ep_mode: str = "normal"):
             if digits:
                 episode = int(digits[-1])
 
-    elif ep_mode == "001":
+    elif s.ep_mode == "001":
         # Look for (039), (040), etc.
         m = re.search(r"\((\d{3,4})\)", text)
         if m:
@@ -291,14 +291,9 @@ async def on_video(_, m: Message):
             return
             
         qs.videos[ep][quality] = m.video.file_id
-        episode_count = len(qs.videos)
         await m.reply(
-            f"✅ **Quality Sort - Episode Saved!**\n\n"
-            f"**Episode:** {ep:03d}\n"
-            f"**Quality:** {quality}\n"
-            f"**Total Episodes:** {episode_count}\n\n"
-            f"Continue sending episodes or use `/publish3` when done.",
-            parse_mode=ParseMode.MARKDOWN
+            f"📥 Saved **Episode {ep:02d} • {quality}**",
+            parse_mode=ParseMode.MARKDOWN,
         )
         return
     
@@ -399,7 +394,7 @@ async def cmd_setformatq(_, m: Message):
             "🎬 Episode - {ep}\n"
             "🎧 Language - Hindi #Official\n"
             "🔎 Quality : {quality}\n"
-            "📡 Powered by : @CrunchyRollChannel",
+            "📡 Powered by : @CrunchyRollChannel.",
             parse_mode=ParseMode.MARKDOWN
         )
     
@@ -452,16 +447,16 @@ async def cmd_publish3(_, m: Message):
             if not has_episodes:
                 continue
                 
-            await m.reply(f"**📦 Publishing {quality} quality episodes...**")
-            
             # Send all episodes for this quality
             for episode in episodes:
                 if quality in qs.videos[episode]:
                     file_id = qs.videos[episode][quality]
-                    caption = qs.caption_format.format(
+                    raw_caption = qs.caption_format.format(
                         ep=f"{episode:02d}", 
                         quality=quality
                     )
+                    # Make entire caption bold
+                    caption = "\n".join(f"**{line}**" for line in raw_caption.splitlines())
                     
                     await safe_call(
                         app.send_video,
@@ -476,13 +471,7 @@ async def cmd_publish3(_, m: Message):
         # Cleanup session
         del quality_users[user_id]
         
-        await m.reply(
-            f"✅ **Quality Sort Complete!**\n\n"
-            f"**Total Videos Published:** {total_posted}\n"
-            f"**Qualities Published:** 480p, 720p, 1080p\n"
-            f"**Episodes Processed:** {len(episodes)}\n\n"
-            f"Use `/qualitysort` to start a new session."
-        )
+        await m.reply(f"🎉 Posted **{total_posted}** episodes successfully!", parse_mode=ParseMode.MARKDOWN)
         
     except Exception as e:
         await m.reply(f"❌ **Error during publication:** `{str(e)}`")
