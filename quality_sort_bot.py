@@ -94,11 +94,6 @@ async def safe_call(func, *args, **kwargs):
             await asyncio.sleep(e.value + 1)
 
 
-def is_command(text: str) -> bool:
-    """Check if text is a command"""
-    return text and text.startswith('/')
-
-
 def setup_quality_sort_handlers(app: Client):
     """Setup all quality sort handlers"""
     
@@ -183,7 +178,7 @@ def setup_quality_sort_handlers(app: Client):
 
         buttons = [
             [InlineKeyboardButton(normal_btn, callback_data="q_epmode_normal"),
-            InlineKeyboardButton(mode001_btn, callback_data="q_epmode_001")],
+             InlineKeyboardButton(mode001_btn, callback_data="q_epmode_001")],
             [InlineKeyboardButton("❌ Cancel", callback_data="q_cancel")]
         ]
 
@@ -211,7 +206,7 @@ def setup_quality_sort_handlers(app: Client):
 
         buttons = [
             [InlineKeyboardButton(normal_btn, callback_data="q_epmode_normal"),
-            [InlineKeyboardButton(mode001_btn, callback_data="q_epmode_001")],
+             InlineKeyboardButton(mode001_btn, callback_data="q_epmode_001")],
             [InlineKeyboardButton("❌ Cancel", callback_data="q_cancel")]
         ]
 
