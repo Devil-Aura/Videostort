@@ -43,7 +43,17 @@ class UserStore:
         self.ep_mode: str = "normal"  # global toggle: normal or 001
 
 
+# New class for quality sort feature
+class QualitySortStore:
+    def __init__(self):
+        self.caption_format: str = ""
+        self.videos: Dict[int, Dict[str, str]] = defaultdict(dict)  # {ep: {quality: file_id}}
+        self.is_active: bool = False
+        self.ep_mode: str = "normal"
+
+
 users: Dict[int, UserStore] = defaultdict(UserStore)
+quality_users: Dict[int, QualitySortStore] = {}
 
 
 def parse_video(msg: Message):
@@ -81,6 +91,41 @@ def parse_video(msg: Message):
     return episode, quality, original
 
 
+# New function for quality sort video parsing
+def parse_quality_video(msg: Message, ep_mode: str = "normal"):
+    text = (msg.caption or msg.video.file_name or "").lower()
+    
+    # Detect quality
+    quality_raw = next((q for q in QUALITY_TAGS if q in text), None)
+    quality = QUALITY_ALIAS.get(quality_raw)
+
+    episode = None
+    if ep_mode == "normal":
+        # Normal regex (E01, Ep 01, etc.)
+        m = re.search(
+            r"(s\d{1,2}e\d{1,4}|episode\s*0*\d{1,4}|ep\.?\s*0*\d{1,4}|\be\s*0*\d{1,4})",
+            text,
+            re.I
+        )
+        if m:
+            digits = re.findall(r"\d{1,4}", m.group(0))
+            if digits:
+                episode = int(digits[-1])
+
+    elif ep_mode == "001":
+        # Look for (039), (040), etc.
+        m = re.search(r"\((\d{3,4})\)", text)
+        if m:
+            episode = int(m.group(1))
+        else:
+            # Also try to find 3-4 digit numbers directly
+            m = re.search(r"\b(\d{3,4})\b", text)
+            if m and 1 <= int(m.group(1)) <= 999:
+                episode = int(m.group(1))
+
+    return episode, quality
+
+
 async def safe_call(func, *args, **kwargs):
     while True:
         try:
@@ -94,6 +139,8 @@ async def cmd_start(_, m: Message):
     await m.reply(
         "👋 **Video-Sort Bot**\n"
         "`/sort` ➜ `/setnames` ➜ `/setformat` ➜ `/setstickers` ➜ `/ignore <anime name>` ➜ `/publish`\n\n"
+        "**New Quality Sort:**\n"
+        "`/qualitysort` ➜ `/setformatq` ➜ Send episodes ➜ `/publish3`\n\n"
         "⚙️ Use `/epmode` to toggle **episode detection mode** (Normal / 001).",
         parse_mode=ParseMode.MARKDOWN,
         quote=True,
@@ -226,6 +273,36 @@ async def cb_epmode(_, cq: CallbackQuery):
 
 @app.on_message(filters.video & filters.private)
 async def on_video(_, m: Message):
+    # Check if quality sort is active
+    user_id = m.from_user.id
+    if user_id in quality_users and quality_users[user_id].is_active:
+        # Handle for quality sort
+        qs = quality_users[user_id]
+        if not qs.caption_format:
+            await m.reply("❌ First set format using `/setformatq`")
+            return
+            
+        ep, quality = parse_quality_video(m, qs.ep_mode)
+        if not ep or not quality:
+            await m.reply(
+                "❌ Could not detect episode number and quality from filename/caption.\n"
+                "Make sure it contains both (e.g., 'Episode 01 480p.mkv')"
+            )
+            return
+            
+        qs.videos[ep][quality] = m.video.file_id
+        episode_count = len(qs.videos)
+        await m.reply(
+            f"✅ **Quality Sort - Episode Saved!**\n\n"
+            f"**Episode:** {ep:03d}\n"
+            f"**Quality:** {quality}\n"
+            f"**Total Episodes:** {episode_count}\n\n"
+            f"Continue sending episodes or use `/publish3` when done.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+    
+    # Handle for normal sort
     ep, q, original = parse_video(m)
     if not ep or not q:
         return await m.reply(
@@ -280,8 +357,177 @@ async def cmd_publish(_, m: Message):
 
     await m.reply(f"🎉 Posted **{posted}** episodes successfully!", parse_mode=ParseMode.MARKDOWN)
 
-# Import and setup quality sort bot
-from quality_sort_bot import setup_quality_sort_handlers
-setup_quality_sort_handlers(app)
+
+# =============================================================================
+# QUALITY SORT FEATURE - NEW COMMANDS
+# =============================================================================
+
+@app.on_message(filters.command("qualitysort") & filters.private)
+async def cmd_qualitysort(_, m: Message):
+    user_id = m.from_user.id
+    quality_users[user_id] = QualitySortStore()
+    qs = quality_users[user_id]
+    qs.is_active = True
+    
+    await m.reply(
+        "🎬 **Quality Sort Session Started!**\n\n"
+        "**Next Steps:**\n"
+        "1. Set caption format using `/setformatq`\n"
+        "2. Send your episodes with quality in filename\n"
+        "3. Use `/publish3` when done\n\n"
+        "**Example filenames:**\n"
+        "• `Episode 01 480p.mkv`\n"
+        "• `Anime E02 720p.mp4`\n"
+        "• `Show [03] 1080p.mkv`",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+@app.on_message(filters.command("setformatq") & filters.private)
+async def cmd_setformatq(_, m: Message):
+    user_id = m.from_user.id
+    if user_id not in quality_users or not quality_users[user_id].is_active:
+        return await m.reply("❌ Start a quality sort session with `/qualitysort` first.")
+    
+    lines = m.text.splitlines()
+    if len(lines) < 2:
+        return await m.reply(
+            "❌ **Please provide format after command:**\n\n"
+            "**Example:**\n"
+            "`/setformatq`\n"
+            "➥ Anime Name [S01]\n"
+            "🎬 Episode - {ep}\n"
+            "🎧 Language - Hindi #Official\n"
+            "🔎 Quality : {quality}\n"
+            "📡 Powered by : @CrunchyRollChannel",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    
+    fmt = "\n".join(lines[1:]).strip()
+    if "{ep}" not in fmt or "{quality}" not in fmt:
+        return await m.reply("❌ Format must include `{ep}` and `{quality}` placeholders.")
+    
+    quality_users[user_id].caption_format = fmt
+    
+    await m.reply(
+        "✅ **Caption format saved for Quality Sort!**\n\n"
+        "Now you can start sending episodes.\n\n"
+        "**Make sure filenames include:**\n"
+        "• Episode number (E01, Episode 1, etc.)\n"  
+        "• Quality (480p, 720p, 1080p)\n\n"
+        "Use `/publish3` when done sending all episodes.",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+@app.on_message(filters.command("publish3") & filters.private)
+async def cmd_publish3(_, m: Message):
+    user_id = m.from_user.id
+    if user_id not in quality_users or not quality_users[user_id].is_active:
+        return await m.reply("❌ Start a quality sort session with `/qualitysort` first.")
+    
+    qs = quality_users[user_id]
+    
+    if not qs.caption_format:
+        return await m.reply("❌ Set caption format with `/setformatq` first.")
+    if not qs.videos:
+        return await m.reply("❌ No episodes collected. Send some videos first.")
+    
+    await m.reply("🚀 **Starting Quality-Wise Publication...**")
+    
+    try:
+        episodes = sorted(qs.videos.keys())
+        qualities = ["480p", "720p", "1080p"]
+        total_posted = 0
+        
+        # Publish by quality
+        for quality in qualities:
+            # Check if we have any episodes in this quality
+            has_episodes = False
+            for ep in episodes:
+                if quality in qs.videos[ep]:
+                    has_episodes = True
+                    break
+            
+            if not has_episodes:
+                continue
+                
+            await m.reply(f"**📦 Publishing {quality} quality episodes...**")
+            
+            # Send all episodes for this quality
+            for episode in episodes:
+                if quality in qs.videos[episode]:
+                    file_id = qs.videos[episode][quality]
+                    caption = qs.caption_format.format(
+                        ep=f"{episode:02d}", 
+                        quality=quality
+                    )
+                    
+                    await safe_call(
+                        app.send_video,
+                        m.chat.id,
+                        file_id,
+                        caption=caption,
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                    total_posted += 1
+                    await asyncio.sleep(2)  # Avoid flood wait
+        
+        # Cleanup session
+        del quality_users[user_id]
+        
+        await m.reply(
+            f"✅ **Quality Sort Complete!**\n\n"
+            f"**Total Videos Published:** {total_posted}\n"
+            f"**Qualities Published:** 480p, 720p, 1080p\n"
+            f"**Episodes Processed:** {len(episodes)}\n\n"
+            f"Use `/qualitysort` to start a new session."
+        )
+        
+    except Exception as e:
+        await m.reply(f"❌ **Error during publication:** `{str(e)}`")
+
+
+@app.on_message(filters.command("qstatus") & filters.private)
+async def cmd_qstatus(_, m: Message):
+    user_id = m.from_user.id
+    if user_id not in quality_users or not quality_users[user_id].is_active:
+        return await m.reply("❌ No active quality sort session. Start with `/qualitysort`")
+    
+    qs = quality_users[user_id]
+    
+    # Count videos by quality
+    quality_count = {"480p": 0, "720p": 0, "1080p": 0}
+    for ep_data in qs.videos.values():
+        for quality in ep_data:
+            if quality in quality_count:
+                quality_count[quality] += 1
+    
+    status_msg = [
+        "📊 **Quality Sort Status**",
+        f"✅ **Caption Format:** {'SET' if qs.caption_format else 'NOT SET'}",
+        f"📹 **Episodes Collected:** {len(qs.videos)}",
+        f"⚙️ **Episode Mode:** {qs.ep_mode.upper()}",
+        "",
+        "**Videos by Quality:**",
+        f"• 480p: {quality_count['480p']}",
+        f"• 720p: {quality_count['720p']}", 
+        f"• 1080p: {quality_count['1080p']}",
+        "",
+        "**Next:** Send more episodes or use `/publish3`"
+    ]
+    
+    await m.reply("\n".join(status_msg))
+
+
+@app.on_message(filters.command("qcancel") & filters.private)
+async def cmd_qcancel(_, m: Message):
+    user_id = m.from_user.id
+    if user_id in quality_users:
+        del quality_users[user_id]
+        await m.reply("✅ Quality sort session cancelled.")
+    else:
+        await m.reply("❌ No active quality sort session.")
+
 
 app.run()
